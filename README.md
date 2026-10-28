@@ -1,173 +1,131 @@
-# TCP Connect Port Scanner (C)
+# TCP Connect Port Scanner
 
-A lightweight TCP `connect()`-based port scanner written in C that focuses on correctness, clarity, and real-world usability.  
-This project probes a target IP across a specified port range using non-blocking sockets and controlled timeouts. Each connection attempt is interpreted using OS-level error behavior and mapped into meaningful TCP states like **open**, **closed**, **filtered**, or **unreachable**.
+A focused IPv4 TCP connect scanner written in C for Linux and WSL. It uses
+non-blocking sockets, bounded concurrency and per-port timeouts, then emits
+deterministic CSV suitable for scripts and basic monitoring.
 
-Output is generated in structured **CSV format with UTC timestamps**, making it suitable for automation, logging, and further analysis pipelines.
+This project intentionally stays small: it is a reliable TCP exposure checker,
+not a vulnerability scanner or an Nmap replacement.
 
----
+## Safety
 
-## Reason Behind Existence Of This Project
+Scan only systems you own or are explicitly authorized to test. Port scanning
+can trigger monitoring systems and may violate network policies when performed
+without permission.
 
-Most beginner port scanners online are either:
+## Features
 
-- Too simplistic to be useful  
-- Too unorganized to learn from  
+- IPv4 TCP connect scanning
+- Configurable port range, timeout and concurrency
+- Bounded worker pool; no unbounded thread or socket creation
+- Non-blocking connections using `poll()` and `SO_ERROR`
+- Stable, port-sorted CSV output with UTC timestamps
+- Graceful `Ctrl+C` handling with partial completed results
+- Strict compiler warnings, integration tests and sanitizer checks
 
-This project sits in between:
+## Requirements
 
-1. Understandable  
-2. Technically correct  
-3. Extensible for real security tooling  
+- Linux or WSL
+- A C11 compiler such as GCC or Clang
+- POSIX threads
+- Python 3 for the test suite
 
-It is built as a foundation for future monitoring and exposure-tracking tools, not just a one-off script.
-
----
-
-## Core Features
-
-1. TCP `connect()`-based scanning  
-2. Non-blocking socket handling  
-3. Explicit timeout control using `select()`  
-4. OS error → TCP state classification  
-5. Clean CSV output for automation / log ingestion  
-6. UTC ISO-8601 timestamps  
-7. Defensive, readable implementation  
-
----
-
-## How It Works (High Level)
-
-**Inputs:**
-
-- Target IP  
-- Start port  
-- End port  
-
-**Per Port Workflow:**
-
-1. Creation of a TCP socket  
-2. Socket switched to non-blocking mode  
-3. Connection attempt via `connect()`  
-4. Wait using `select()` with explicit timeout  
-5. Interpretation of OS-level error codes  
-
-**Resulting States:**
-
-- Open  
-- Closed  
-- Filtered  
-- Unreachable  
-- Unknown  
-
----
-
-## Output Format
-
-Structured CSV:
-
-```
-timestamp,ip,port,state
-2026-02-09T21:45:30Z,192.168.1.1,22,open
-2026-02-09T21:45:30Z,192.168.1.1,80,closed
-```
-
----
-
-## Build Instructions (Linux / WSL)
+## Build
 
 ```bash
-gcc port_scanner.c -o scanner
+make
 ```
 
----
+Equivalent direct command:
+
+```bash
+gcc -std=c11 -O2 -Wall -Wextra -Wpedantic -Werror \
+    port_scanner.c -o scanner -pthread
+```
 
 ## Usage
 
-```bash
-./scanner <IP> <START_PORT> <END_PORT>
+```text
+./scanner <IPv4> <START_PORT> <END_PORT> [--timeout MS] [--concurrency N]
 ```
 
-**Example:**
+Defaults:
+
+- Timeout: `1000` ms
+- Concurrency: `100`
+
+Accepted limits:
+
+- Ports: `1-65535`
+- Timeout: `100-5000` ms
+- Concurrency: `1-512`
+
+Examples:
 
 ```bash
-./scanner 192.168.1.1 1 1024
+./scanner 127.0.0.1 1 1024
+./scanner 192.168.1.10 1 65535 --timeout 750 --concurrency 150
+./scanner 192.168.1.10 20 443 > results.csv
 ```
 
----
+Diagnostics and input errors go to `stderr`, so redirected CSV on `stdout`
+remains parseable.
 
-## Output States Explained
+## Output
 
-| State        | Meaning |
-|-------------|----------|
-| **open**        | TCP connection successful |
-| **closed**      | Target actively refused connection |
-| **filtered**    | No response within timeout |
-| **unreachable** | Host / network unreachable |
-| **unknown**     | Unhandled OS error |
+```csv
+timestamp,ip,port,state
+2026-03-16T09:25:05Z,127.0.0.1,22,open
+2026-03-16T09:25:05Z,127.0.0.1,23,closed
+```
 
----
+States:
 
-## Design Decisions
+| State | Meaning |
+| --- | --- |
+| `open` | The TCP connection completed successfully. |
+| `closed` | The destination actively refused the connection. |
+| `filtered` | No result arrived before the configured timeout. |
+| `unreachable` | The operating system reported the host or network unreachable. |
+| `error` | A local or otherwise unclassified socket error occurred. |
 
-1. Non-blocking sockets prevent scan freezes  
-2. `select()` enables controlled waiting instead of blind delays  
-3. OS error codes drive state classification  
-4. CSV output simplifies integration with:
+These states reflect TCP connect behavior. A timeout is evidence of silence, not
+proof that a firewall is the cause.
 
-   - Scripts  
-   - SIEM tools  
-   - Monitoring dashboards  
+## Tests
 
-Focus was reliability and protocol behavior — **not scan speed**.
+```bash
+make test
+make sanitizer
+```
 
----
+The integration tests use loopback addresses only. They verify input handling,
+the requested target address, open and closed ports, CSV structure, completeness
+and deterministic port ordering. Timeout classification is environment-dependent
+and is therefore not asserted using an external host.
 
-## Reminder: What This Is NOT
+## Performance model
 
-- Not a vulnerability scanner  
-- Not an exploit tool  
-- Not a brute force engine  
-- Not a “hacking script”  
+At most the configured number of ports are in flight. With the default
+concurrency of 100 and a one-second timeout, 1,000 completely silent ports take
+roughly ten seconds plus scheduling overhead. Closed ports usually complete much
+faster because the refusal arrives immediately.
 
-This is **exposure detection** — the first layer of defensive security visibility.
+Higher concurrency is not always faster and can exhaust local or network
+resources. Start with the defaults.
 
----
+## Intentional v1.0 limits
 
-## Future Improvements
+- One numeric IPv4 address per run
+- TCP connect scans only
+- No UDP, raw SYN scans or privileged packet crafting
+- No host discovery, CIDR ranges or IPv6
+- No banner grabbing, service detection or vulnerability checks
+- No GUI, database or distributed scanning
 
-Planned evolution of this project:
+Keeping these boundaries makes the scanner understandable, testable and useful
+without turning it into a large security framework.
 
-- Parallel scanning  
-- Configurable timeouts  
-- Result persistence  
-- Exposure change tracking  
-- Service banner logging  
-- Automation hooks  
+## License
 
-This scanner is designed as a base layer for broader security tooling.
-
----
-
-## Learnings
-
-- Low-level socket programming in C  
-- Non-blocking I/O handling  
-- OS-level error interpretation  
-- Network byte order concepts  
-- Building monitoring-oriented utilities  
-
-Most importantly:
-
-**Building systems teaches more than reading about them.**
-
----
-
-## Author Intent
-
-This project is part of a practical cybersecurity learning path focused on:
-
-- Building tools  
-- Understanding networks  
-- Thinking in monitoring and visibility  
-- Shipping real implementations instead of theory-only work  
+MIT
