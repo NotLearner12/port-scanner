@@ -1,195 +1,206 @@
 # TCP Connect Port Scanner
 
-A small, reliable IPv4 TCP port scanner written in C for Linux and WSL.
+> A focused IPv4 TCP connect scanner written in C for Linux and WSL. It uses a bounded worker pool, non-blocking sockets, and deterministic CSV output for authorized exposure checks.
 
-It combines non-blocking sockets with a bounded worker pool, configurable
-timeouts, and deterministic CSV output. The goal is practical exposure checking
-without growing into a vulnerability-scanning framework or an Nmap replacement.
+[![CI](https://github.com/NotLearner12/port-scanner/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/NotLearner12/port-scanner/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Language: C](https://img.shields.io/badge/language-C-00599C.svg)](port_scanner.c)
+
+**C11** · **Linux / WSL** · **TCP connect scanning** · **CSV output** · **MIT licensed**
+
+## Overview
+
+This project is deliberately small and dependable. Give it one numeric IPv4 address and an inclusive TCP port range; it connects to each port with a configurable timeout and produces sorted CSV results.
+
+It is intended for systems you own or are explicitly authorized to assess—not as a vulnerability scanner or replacement for Nmap.
 
 > [!IMPORTANT]
-> Scan only systems you own or are explicitly authorized to test. Unauthorized
-> scanning may violate network policies or local law and can trigger security
-> monitoring.
+> Scan only hosts and networks you own or have explicit permission to test. Unauthorized scanning can violate policy or law and may trigger security monitoring.
 
-## Highlights
+## Features
 
-- Scans a user-selected IPv4 TCP port range
-- Uses non-blocking `connect()`, `poll()`, and `SO_ERROR`
-- Limits concurrency instead of creating unlimited threads or sockets
-- Supports configurable timeouts and worker counts
-- Produces stable, port-sorted CSV with UTC timestamps
-- Keeps diagnostics on `stderr` and scan data on `stdout`
-- Handles `Ctrl+C` gracefully and returns completed results
-- Includes strict builds, loopback integration tests, sanitizers, and Linux CI
+| Feature | Status | Details |
+| --- | :---: | --- |
+| IPv4 TCP connect scans | ✅ Available | Scan one numeric IPv4 target and an inclusive port range. |
+| Bounded concurrency | ✅ Available | Uses 1-512 workers; default is 100. |
+| Timeout control | ✅ Available | Configure per-port timeout from 100-5000 ms; default is 1000 ms. |
+| Stable CSV results | ✅ Available | UTC timestamps; results are emitted in ascending port order. |
+| Result classification | ✅ Available | Reports open, closed, filtered, unreachable, or error. |
+| Graceful interruption | ✅ Available | Ctrl+C preserves results already completed. |
+| Automated verification | ✅ Available | Loopback integration tests, sanitizers, and GitHub Actions CI. |
+| UDP, SYN, CIDR, IPv6, banners | ❌ Out of scope | Kept out intentionally to retain a clear v1.0 boundary. |
 
-## Quick start
+## Tech stack
 
-```bash
+| Area | Technology |
+| --- | --- |
+| Scanner | C11 |
+| Networking | POSIX sockets, connect(), poll(), SO_ERROR |
+| Concurrency | POSIX threads with a shared work queue |
+| Build | Make + a C11 compiler |
+| Tests | Python 3 unittest, loopback sockets only |
+| Quality checks | Strict compiler warnings, AddressSanitizer, UndefinedBehaviorSanitizer |
+| Automation | GitHub Actions on Ubuntu |
+
+## Architecture
+
+~~~text
+┌───────────────────────────────────────────────────────────────────┐
+│                         scanner executable                        │
+│                                                                   │
+│  CLI validation ──► shared port queue ──► bounded worker pool     │
+│                              │                    │              │
+│                              │                    ▼              │
+│                              │      non-blocking TCP connect      │
+│                              │      poll() + SO_ERROR             │
+│                              ▼                                   │
+│                    in-memory result array                         │
+│                              │                                   │
+│                              ▼                                   │
+│                 deterministic, port-sorted CSV on stdout          │
+└───────────────────────────────────────────────────────────────────┘
+~~~
+
+Each worker claims one port at a time, opens a non-blocking socket, waits until the connection completes or its deadline expires, classifies the result, and closes the socket. Results are collected first and printed after all workers finish, so concurrent work never scrambles the CSV order.
+
+## Project layout
+
+~~~text
+.
+├── port_scanner.c           # Scanner implementation
+├── tests/
+│   └── test_scanner.py      # Loopback integration tests
+├── .github/workflows/ci.yml # Build and test workflow
+├── Makefile                 # Build, test, sanitizer, and clean commands
+├── README.md                # Project documentation
+└── LICENSE                  # MIT License
+~~~
+
+## Getting started
+
+### Prerequisites
+
+- Linux or WSL
+- GCC, Clang, or another C11 compiler
+- POSIX threads (available on standard Linux/WSL toolchains)
+- Python 3 only for the test suite
+
+### Build and run
+
+~~~bash
 git clone https://github.com/NotLearner12/port-scanner.git
 cd port-scanner
 make
 ./scanner 127.0.0.1 1 1024
-```
+~~~
 
-Requirements:
+Show the CLI summary at any time:
 
-- Linux or WSL
-- GCC, Clang, or another C11 compiler
-- POSIX threads
-- Python 3 only when running the test suite
+~~~bash
+./scanner --help
+~~~
 
 ## Usage
 
-```text
+~~~text
 ./scanner <IPv4> <START_PORT> <END_PORT> [--timeout MS] [--concurrency N]
-```
+~~~
 
 | Argument | Accepted value | Default |
 | --- | --- | --- |
-| `IPv4` | Numeric IPv4 address | Required |
-| `START_PORT` | `1-65535` | Required |
-| `END_PORT` | `1-65535` and not below `START_PORT` | Required |
-| `--timeout` | `100-5000` milliseconds | `1000` |
-| `--concurrency` | `1-512` workers | `100` |
-
-Show the command summary:
-
-```bash
-./scanner --help
-```
+| IPv4 | Numeric IPv4 address | Required |
+| START_PORT | 1-65535 | Required |
+| END_PORT | 1-65535, not below START_PORT | Required |
+| --timeout | 100-5000 milliseconds | 1000 |
+| --concurrency | 1-512 workers | 100 |
 
 ### Examples
 
 Scan the first 1,024 TCP ports on localhost:
 
-```bash
+~~~bash
 ./scanner 127.0.0.1 1 1024
-```
+~~~
 
-Use a shorter timeout and 150 workers on an authorized LAN target:
+Use a shorter timeout and 150 workers against an authorized LAN host:
 
-```bash
+~~~bash
 ./scanner 192.168.1.10 1 65535 --timeout 750 --concurrency 150
-```
+~~~
 
-Save clean CSV while leaving errors visible in the terminal:
+Write clean CSV to a file while retaining diagnostics in the terminal:
 
-```bash
+~~~bash
 ./scanner 192.168.1.10 20 443 > results.csv
-```
+~~~
 
-## Output
+## Output and exit codes
 
-Results are written to `stdout` in port order:
+The scanner writes only results to stdout, in ascending port order:
 
-```csv
+~~~csv
 timestamp,ip,port,state
 2026-03-16T09:25:05Z,127.0.0.1,22,open
 2026-03-16T09:25:05Z,127.0.0.1,23,closed
-```
+~~~
 
 | State | Meaning |
 | --- | --- |
-| `open` | The TCP connection completed successfully. |
-| `closed` | The destination actively refused the connection. |
-| `filtered` | No result arrived before the configured timeout. |
-| `unreachable` | The operating system reported the host or network unreachable. |
-| `error` | A local or otherwise unclassified socket error occurred. |
+| open | The TCP connection completed successfully. |
+| closed | The destination actively refused the connection. |
+| filtered | No result arrived before the timeout. This does not prove a firewall caused it. |
+| unreachable | The operating system reported a host or network unreachable condition. |
+| error | A local or unclassified socket error occurred. |
 
-A timeout is evidence that the target remained silent. It is not proof that a
-firewall caused the silence.
-
-Exit codes:
-
-| Code | Meaning |
+| Exit code | Meaning |
 | --- | --- |
-| `0` | The scan completed. |
-| `1` | Input validation, setup, or runtime failure. |
-| `130` | The scan was interrupted; CSV contains completed ports only. |
+| 0 | Scan completed. |
+| 1 | Input validation, setup, or runtime failure. |
+| 130 | Interrupted; CSV contains only completed ports. |
 
-## How it works
+## Performance model
 
-For every assigned port, a worker:
+At most the selected number of ports are in flight. For silent ports, a practical upper-bound estimate is:
 
-1. Creates a TCP socket.
-2. Preserves its existing flags and enables non-blocking mode.
-3. Calls `connect()` using the validated target address.
-4. Waits with `poll()` until the connection finishes or the deadline expires.
-5. Reads `SO_ERROR`, classifies the result, and closes the socket.
+~~~text
+ceil(number of ports / concurrency) × timeout
+~~~
 
-Workers claim ports from a shared queue. Results are stored in memory and
-printed only after the workers finish, which keeps the CSV complete and sorted
-even though connections run concurrently.
+With the default settings, 1,000 silent ports take roughly ten seconds plus scheduling overhead. Increasing concurrency is not always faster: excessive values can exhaust local file descriptors, ephemeral ports, or network equipment.
 
-## Performance
+## Quality and verification
 
-At most the configured number of ports are in flight. For completely silent
-ports, a useful upper-bound estimate is:
-
-```text
-ceil(number_of_ports / concurrency) × timeout
-```
-
-With the defaults, 1,000 silent ports take roughly ten seconds plus scheduling
-overhead. Closed ports normally finish much faster because the refusal arrives
-immediately.
-
-More concurrency is not automatically better. Excessive values can exhaust
-local file descriptors, ephemeral ports, or network equipment. Start with the
-defaults and tune only on networks you control.
-
-## Build and test
-
-Build with strict warnings:
-
-```bash
+~~~bash
+# Strict production build
 make clean all
-```
 
-Equivalent compiler command:
-
-```bash
-gcc -std=c11 -O2 -Wall -Wextra -Wpedantic -Werror \
-    port_scanner.c -o scanner -pthread
-```
-
-Run the loopback-only integration tests:
-
-```bash
+# Loopback-only integration tests
 make test
-```
 
-Run the same tests with AddressSanitizer and UndefinedBehaviorSanitizer:
-
-```bash
+# Run the same tests with AddressSanitizer and UndefinedBehaviorSanitizer
 make sanitizer
-```
+~~~
 
-The tests cover argument validation, correct target-address use, known open and
-closed loopback ports, CSV structure, completeness, and deterministic ordering.
-They intentionally do not depend on external hosts. Timeout classification is
-network-dependent and is not asserted against the public internet.
+The tests validate CLI errors, correct target-address handling, known open and closed loopback ports, CSV structure, complete output, and deterministic port ordering. They do not scan external hosts.
 
-## Intentional v1.0 boundaries
+GitHub Actions runs the strict build, integration tests, and sanitizer suite on pushes to main and pull requests.
 
-This release supports:
+## Troubleshooting
 
-- One numeric IPv4 target per run
-- TCP connect scans
-- One inclusive port range
-- CSV output
+| Issue | What to check |
+| --- | --- |
+| make cannot find a compiler | Install a Linux/WSL C toolchain such as GCC or Clang. |
+| python3 is missing during make test | Install Python 3; it is used only by the test harness. |
+| All ports are filtered | Confirm the target is authorized and reachable; a timeout only means no response arrived in time. |
+| Scan is slower than expected | Reduce the scanned range, adjust the timeout, or carefully tune concurrency on your own network. |
+| Permission or policy warning | Stop and obtain authorization before scanning. |
 
-This release intentionally does **not** include:
+## Scope and contribution
 
-- UDP or raw SYN scanning
-- CIDR ranges, host discovery, or IPv6
-- Banner grabbing or service/version detection
-- Vulnerability detection or exploitation
-- A GUI, database, plugin system, or distributed workers
+The v1.0 finish line is one IPv4 target, TCP connect scanning, one inclusive port range, and CSV output. Features such as UDP/SYN scans, CIDR ranges, host discovery, IPv6, banner grabbing, vulnerability detection, GUIs, databases, plugins, and distributed workers are intentionally excluded.
 
-These boundaries are the finish line, not missing promises. They keep the
-project understandable, testable, and useful as a focused scanner.
+Focused improvements are welcome: preserve the C11/Linux boundary, keep tests passing, and update this README when public behavior changes. Please open a pull request with a clear description and validation notes.
 
 ## License
 
-Released under the [MIT License](LICENSE).
+Released under the [MIT License](LICENSE). Copyright © 2026 Anay Sharma.
